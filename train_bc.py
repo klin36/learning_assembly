@@ -64,7 +64,9 @@ def train_bc(
 
             # Add noise to target action
             noise = torch.randn_like(target)
-            noisy_target = noise_scheduler.add_noise(original_samples=target, noise=noise, timesteps=t)
+            # noisy_target = noise_scheduler.add_noise(original_samples=target, noise=noise, timesteps=t)
+            t_expanded = t[:, None, None]
+            noisy_target = noise_scheduler.add_noise(original_samples=target, noise=noise, timesteps=t_expanded)
 
             # Predict noise
             pred = model(noisy_target, t, condition)  # (B, act_dim, T)
@@ -93,6 +95,7 @@ if __name__ == "__main__":
         zarr_path="data/pusht/pusht_cchi_v7_replay.zarr",
         obs_dim=14,
         act_dim=2,
-        horizon=16,
+        horizon=32,
+        epochs=5,
         run_name="bc_unet1d_pusht"
     )

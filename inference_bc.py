@@ -1,5 +1,6 @@
 import torch
 from diffusers.schedulers import DDIMScheduler
+import wandb
 
 from datasets.pusht_dataset import PushTDataset
 from models.unet_bc import ConditionalUNet1D
@@ -10,7 +11,7 @@ def run_inference(
     zarr_path='data/pusht/pusht_cchi_v7_replay.zarr',
     obs_dim=14,
     act_dim=2,
-    horizon=16,
+    horizon=32,
     num_steps=50,  # inference steps
     device='cuda' if torch.cuda.is_available() else 'cpu'
 ):

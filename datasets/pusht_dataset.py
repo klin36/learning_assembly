@@ -25,34 +25,24 @@ class PushTDataset(Dataset):
         self.action_key = action_key
         self.use_normalization = use_normalization
 
-        # Load all episodes and concatenate
         root = zarr.open(os.path.join(zarr_path, "data"), mode='r')
-        self.obs_list = []
-        self.action_list = []
-        self.episode_starts = []
-        self.episode_ends = []
+        obs = root[self.obs_key][:]
+        act = root[self.action_key][:]
 
-        episode_keys = sorted(root[self.obs_key].keys(), key=lambda x: float(x))
-        start_idx = 0
+        if obs.ndim == 3:
+            obs = obs[:, :7, :]  # use first 7 keypoints only
+            obs = obs.reshape(obs.shape[0], -1)
+        if act.ndim == 3:
+            act = act.reshape(act.shape[0], -1)
 
-        for k in episode_keys:
-            obs = root[self.obs_key][k][:]
-            act = root[self.action_key][k][:]
+        self.obs = obs
+        self.action = act
 
-            if len(obs) < self.horizon:
-                continue  # skip short episodes
+        # Drop samples shorter than horizon
+        max_index = len(self.obs) - horizon
+        self.valid_idxs = list(range(max_index))
 
-            self.obs_list.append(obs)
-            self.action_list.append(act)
-            end_idx = start_idx + len(obs)
-            self.episode_starts.append(start_idx)
-            self.episode_ends.append(end_idx)
-            start_idx = end_idx
-
-        self.obs = np.concatenate(self.obs_list, axis=0)
-        self.action = np.concatenate(self.action_list, axis=0)
-
-        # Compute normalization stats
+        # Normalization
         if self.use_normalization:
             self.obs_mean = np.mean(self.obs, axis=0)
             self.obs_std = np.std(self.obs, axis=0) + 1e-6
@@ -60,12 +50,6 @@ class PushTDataset(Dataset):
             self.action_std = np.std(self.action, axis=0) + 1e-6
         else:
             self.obs_mean = self.obs_std = self.action_mean = self.action_std = None
-
-        # Compute valid starting indices (avoid crossing episodes)
-        self.valid_idxs = []
-        for start, end in zip(self.episode_starts, self.episode_ends):
-            for i in range(start, end - self.horizon + 1):
-                self.valid_idxs.append(i)
 
     def __len__(self):
         return len(self.valid_idxs)
@@ -75,14 +59,17 @@ class PushTDataset(Dataset):
         obs_seq = self.obs[i:i+self.horizon]
         act_seq = self.action[i:i+self.horizon]
 
+        # Normalize
         if self.use_normalization:
             obs_seq = (obs_seq - self.obs_mean) / self.obs_std
             act_seq = (act_seq - self.action_mean) / self.action_std
 
-        obs_tensor = torch.tensor(obs_seq, dtype=torch.float32).T  # (C, T)
-        act_tensor = torch.tensor(act_seq, dtype=torch.float32).T  # (C, T)
+        # Convert to tensor and transpose to (C, T)
+        obs_tensor = torch.tensor(obs_seq, dtype=torch.float32).permute(1, 0)
+        act_tensor = torch.tensor(act_seq, dtype=torch.float32).permute(1, 0)
 
         return {
             "condition": obs_tensor,
             "target": act_tensor
         }
+

@@ -5,8 +5,8 @@ from diffusers.models import UNet1DModel
 class ConditionalUNet1D(nn.Module):
     def __init__(self, obs_dim, act_dim, horizon, model_channels=128):
         super().__init__()
-        self.obs_dim = obs_dim
-        self.act_dim = act_dim
+        self.obs_dim = obs_dim # obs_dim = 14 (7 keypoints x2) to match Diffusion Policy
+        self.act_dim = act_dim # act_dim = 2
         self.horizon = horizon
 
         self.in_channels = obs_dim + act_dim
