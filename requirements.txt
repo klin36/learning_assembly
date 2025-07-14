@@ -1,0 +1,6 @@
+torch>=2.0
+diffusers
+numpy
+zarr
+tqdm
+wandb
