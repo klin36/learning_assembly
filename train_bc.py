@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import wandb
+from datetime import datetime
 
 from diffusers.schedulers import DDPMScheduler
 
@@ -45,18 +46,20 @@ def train_bc(
         obs_key='keypoint',
         action_key='action'
     )
+    print("Action mean:", dataset.action_mean)
+    print("Action std:", dataset.action_std)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     model = ConditionalUNet1D(obs_dim, act_dim, horizon).to(device)
-    noise_scheduler = DDPMScheduler(num_train_timesteps=1000)
+    noise_scheduler = DDPMScheduler(num_train_timesteps=100)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     model.train()
     for epoch in range(epochs):
         total_loss = 0.0
         for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
-            condition = batch['condition'].to(device)   # (B, obs_dim, T)
-            target = batch['target'].to(device)         # (B, act_dim, T)
+            condition = batch['condition'].to(device) # (B, obs_dim, T)
+            target = batch['target'].to(device) # (B, act_dim, T)
 
             # Sample random timestep for each batch element
             bsz = target.shape[0]
@@ -64,7 +67,6 @@ def train_bc(
 
             # Add noise to target action
             noise = torch.randn_like(target)
-            # noisy_target = noise_scheduler.add_noise(original_samples=target, noise=noise, timesteps=t)
             t_expanded = t[:, None, None]
             noisy_target = noise_scheduler.add_noise(original_samples=target, noise=noise, timesteps=t_expanded)
 
@@ -82,11 +84,14 @@ def train_bc(
         print(f"[Epoch {epoch+1}] Avg loss: {avg_loss:.6f}")
         wandb.log({"loss": avg_loss, "epoch": epoch + 1})
 
-        # Save checkpoint
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        torch.save(model.state_dict(), save_path)
-        print(f"Saved model to {save_path}")
-        wandb.save(save_path)
+        torch.save(model.state_dict(), save_path) # save to bc_model.pt so it will always hold most recent run
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    save_path = f"checkpoints/bc_model_{timestamp}.pt"
+    torch.save(model.state_dict(), save_path) # save to bc_model_{timestamp}.pt
+    print(f"Saved model to {save_path}")
+    wandb.save(save_path)
 
     wandb.finish()
 
@@ -96,6 +101,6 @@ if __name__ == "__main__":
         obs_dim=14,
         act_dim=2,
         horizon=32,
-        epochs=5,
+        epochs=200,
         run_name="bc_unet1d_pusht"
     )

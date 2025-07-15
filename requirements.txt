@@ -4,3 +4,4 @@ numpy
 zarr
 tqdm
 wandb
+matplotlib
