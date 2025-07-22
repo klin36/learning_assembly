@@ -132,7 +132,6 @@ def train_bc(
 
             # MSE loss between predicted and true noise
             loss = F.mse_loss(pred_noise, noise.permute(0, 2, 1))
-            # loss = F.mse_loss(pred_noise, noise)
 
             # Backpropagation and optimization
             loss.backward()

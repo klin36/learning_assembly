@@ -7,8 +7,8 @@ from pymunk.vec2d import Vec2d
 from pymunk.space_debug_draw_options import SpaceDebugColor
 import shapely.geometry as sg
 import cv2
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 import collections
 
 
@@ -474,8 +474,13 @@ class PushTEnv(gym.Env):
         self.goal_pose = np.array([256,256,np.pi/4])  # x, y, theta (in radians)
 
         # Add collision handeling
-        self.collision_handeler = self.space.add_collision_handler(0, 0)
-        self.collision_handeler.post_solve = self._handle_collision
+        try:
+            handler = self.space.add_collision_handler(0, 0)
+            handler.post_solve = self._handle_collision
+            self.collision_handler = handler
+        except AttributeError:
+            print("[Warning] Collision handler not available — continuing without contact count.")
+            self.collision_handler = None
         self.n_contact_points = 0
 
         self.max_score = 50 * 100

@@ -5,3 +5,9 @@ zarr
 tqdm
 wandb
 matplotlib
+pygame
+pymunk
+shapely
+opencv
+gymnasium
+moviepy

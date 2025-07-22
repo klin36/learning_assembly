@@ -3,17 +3,17 @@ import numpy as np
 import torch
 import collections
 from tqdm import tqdm
+from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
 
-from envs.pusht import PushTEnv  # Update if you have a different location
+from envs.pusht_env import PushTEnv
 from models.unet_bc import ConditionalUnet1D
-from utils.ema import EMAModel
-from utils.normalization import normalize_data, unnormalize_data
-from datasets.pusht_dataset import PushTStateDataset
+from utils.training_utils import EMAModel
+from datasets.pusht_dataset import PushTStateDataset, normalize_data, unnormalize_data
 from diffusers.schedulers import DDPMScheduler
 
-# --- Parameters ---
+# Parameters
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model_path = "checkpoints/bc_model.pt"
+model_path = "checkpoints/bc_model_2025-07-22_13-58-35.pt"
 zarr_path = "data/pusht/pusht_cchi_v7_replay.zarr"
 obs_horizon = 2
 pred_horizon = 16
@@ -23,7 +23,7 @@ obs_dim = 5
 action_dim = 2
 max_steps = 200
 
-# --- Load dataset for stats only ---
+# Load dataset for stats only
 dataset = PushTStateDataset(
     dataset_path=zarr_path,
     pred_horizon=pred_horizon,
@@ -32,7 +32,7 @@ dataset = PushTStateDataset(
 )
 stats = dataset.stats
 
-# --- Load model ---
+# Model
 model = ConditionalUnet1D(
     input_dim=action_dim,
     global_cond_dim=obs_dim * obs_horizon
@@ -40,11 +40,12 @@ model = ConditionalUnet1D(
 model.load_state_dict(torch.load(model_path, map_location=device))
 model.eval()
 
-# --- EMA Model (optional, you can skip this if EMA is not used) ---
+# # Restore EMA weights (already saved into model during training)
+# # Not necessary
 # ema = EMAModel(model.parameters(), power=0.75)
 # ema.copy_to(model.parameters())
 
-# --- Load scheduler ---
+# Scheduler
 noise_scheduler = DDPMScheduler(
     num_train_timesteps=num_diffusion_iters,
     beta_schedule='squaredcos_cap_v2',
@@ -53,17 +54,17 @@ noise_scheduler = DDPMScheduler(
 )
 noise_scheduler.set_timesteps(num_diffusion_iters)
 
-# --- Init environment ---
+# Environment
 env = PushTEnv()
 env.seed(100000)
 obs, _ = env.reset()
 
-# Initialize observation history
+# Observation history
 obs_deque = collections.deque([obs] * obs_horizon, maxlen=obs_horizon)
 done = False
 step_idx = 0
 
-# --- Main inference loop ---
+# Main inference loop
 with tqdm(total=max_steps, desc="Rollout") as pbar:
     while not done:
         # Stack and normalize observations
@@ -76,9 +77,10 @@ with tqdm(total=max_steps, desc="Rollout") as pbar:
         action = torch.randn((1, pred_horizon, action_dim), device=device)
 
         # Diffusion process
-        for k in noise_scheduler.timesteps:
-            with torch.no_grad():
+        with torch.no_grad():
+            for k in noise_scheduler.timesteps:
                 noise_pred = model(action, k, global_cond=obs_cond)
+                noise_pred = noise_pred.permute(0, 2, 1)
                 action = noise_scheduler.step(
                     model_output=noise_pred,
                     timestep=k,
@@ -94,14 +96,25 @@ with tqdm(total=max_steps, desc="Rollout") as pbar:
         end = start + action_horizon
         to_execute = action[start:end]
 
+        imgs = [env.render(mode='rgb_array')]  # store first frame for video
+        print("Predicted action:", to_execute)
+
         for u in range(len(to_execute)):
             obs, reward, done, _, _ = env.step(to_execute[u])
             obs_deque.append(obs)
+            imgs.append(env.render(mode='rgb_array')) # adding frames to video
 
             step_idx += 1
             pbar.update(1)
             pbar.set_postfix(step=step_idx, reward=reward)
-            if step_idx > max_steps:
+            if step_idx >= max_steps:
                 done = True
             if done:
                 break
+        print(f"Rollout steps executed: {step_idx}")
+
+        
+        video_path = "inference.mp4"
+        clip = ImageSequenceClip(imgs, fps=10)
+        clip.write_videofile(video_path, codec="libx264")
+        print(f"Saved video to {video_path}")
