@@ -131,7 +131,8 @@ def train_bc(
             pred_noise = model(noisy_action, timesteps, global_cond=obs_cond)  # (B, act_dim, T)
 
             # MSE loss between predicted and true noise
-            loss = F.mse_loss(pred_noise, noise)
+            loss = F.mse_loss(pred_noise, noise.permute(0, 2, 1))
+            # loss = F.mse_loss(pred_noise, noise)
 
             # Backpropagation and optimization
             loss.backward()

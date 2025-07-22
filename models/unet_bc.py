@@ -3,6 +3,7 @@ from typing import Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class SinusoidalPosEmb(nn.Module):
@@ -31,7 +32,7 @@ class Downsample1d(nn.Module):
 class Upsample1d(nn.Module):
     def __init__(self, dim):
         super().__init__()
-        self.conv = nn.ConvTranspose1d(dim, dim, kernel_size=4, stride=2, padding=1)
+        self.conv = nn.ConvTranspose1d(dim, dim, kernel_size=4, stride=2, padding=1, output_padding=1)
 
     def forward(self, x):
         return self.conv(x)
@@ -87,19 +88,141 @@ class ConditionalResidualBlock1D(nn.Module):
         return out + self.residual_conv(x)
 
 
+# class ConditionalUnet1D(nn.Module):
+#     def __init__(self,
+#                  input_dim,
+#                  global_cond_dim,
+#                  diffusion_step_embed_dim=256,
+#                  down_dims=[256, 512, 1024],
+#                  kernel_size=5,
+#                  n_groups=8):
+#         super().__init__()
+
+#         self.input_dim = input_dim
+#         cond_dim = diffusion_step_embed_dim + global_cond_dim
+
+#         self.diffusion_step_encoder = nn.Sequential(
+#             SinusoidalPosEmb(diffusion_step_embed_dim),
+#             nn.Linear(diffusion_step_embed_dim, diffusion_step_embed_dim * 4),
+#             nn.Mish(),
+#             nn.Linear(diffusion_step_embed_dim * 4, diffusion_step_embed_dim)
+#         )
+
+#         self.input_proj = Conv1dBlock(input_dim, down_dims[0], kernel_size, n_groups)
+
+#         # Downsampling path
+#         self.down_modules = nn.ModuleList()
+#         for i in range(len(down_dims) - 1):
+#             dim_in, dim_out = down_dims[i], down_dims[i + 1]
+#             self.down_modules.append(nn.ModuleList([
+#                 ConditionalResidualBlock1D(dim_in, dim_out, cond_dim, kernel_size, n_groups),
+#                 ConditionalResidualBlock1D(dim_out, dim_out, cond_dim, kernel_size, n_groups),
+#                 Downsample1d(dim_out)
+#             ]))
+#         # Final down block (no downsample)
+#         self.down_modules.append(nn.ModuleList([
+#             ConditionalResidualBlock1D(down_dims[-1], down_dims[-1], cond_dim, kernel_size, n_groups),
+#             ConditionalResidualBlock1D(down_dims[-1], down_dims[-1], cond_dim, kernel_size, n_groups),
+#             nn.Identity()
+#         ]))
+
+#         # Middle blocks
+#         mid_dim = down_dims[-1]
+#         self.mid_modules = nn.ModuleList([
+#             ConditionalResidualBlock1D(mid_dim, mid_dim, cond_dim, kernel_size, n_groups),
+#             ConditionalResidualBlock1D(mid_dim, mid_dim, cond_dim, kernel_size, n_groups)
+#         ])
+
+#         # Upsampling path
+#         self.up_modules = nn.ModuleList()
+#         reversed_dims = list(reversed(down_dims))          # [1024, 512, 256]
+#         skip_dims = list(reversed(down_dims[:-1]))         # [512, 256]
+
+#         for i in range(len(skip_dims)):
+#             dim_in = reversed_dims[i]
+#             skip_dim = skip_dims[i]
+#             dim_out = reversed_dims[i + 1]
+#             in_channels = dim_in + skip_dim
+
+#             self.up_modules.append(nn.ModuleList([
+#                 ConditionalResidualBlock1D(in_channels, dim_out, cond_dim, kernel_size, n_groups),
+#                 ConditionalResidualBlock1D(dim_out, dim_out, cond_dim, kernel_size, n_groups),
+#                 Upsample1d(dim_out)
+#             ]))
+
+#         # Final up block (no skip, no upsample)
+#         self.up_modules.append(nn.ModuleList([
+#             ConditionalResidualBlock1D(down_dims[0], down_dims[0], cond_dim, kernel_size, n_groups),
+#             ConditionalResidualBlock1D(down_dims[0], down_dims[0], cond_dim, kernel_size, n_groups),
+#             nn.Identity()
+#         ]))
+
+#         self.final_conv = nn.Sequential(
+#             Conv1dBlock(down_dims[0], down_dims[0], kernel_size, n_groups),
+#             nn.Conv1d(down_dims[0], input_dim, kernel_size=1)
+#         )
+
+#         print("Number of parameters: {:e}".format(sum(p.numel() for p in self.parameters())))
+
+#     def forward(self, x: torch.Tensor, timestep: Union[int, torch.Tensor], global_cond: torch.Tensor):
+#         """
+#         Args:
+#             x: (B, T, input_dim) or (B, input_dim, T)
+#             timestep: (B,) or scalar
+#             global_cond: (B, cond_dim)
+#         Returns:
+#             x: (B, input_dim, T)
+#         """
+#         if x.ndim == 3 and x.shape[1] != self.input_dim:
+#             x = x.permute(0, 2, 1)  # (B, T, C) -> (B, C, T)
+
+#         x = self.input_proj(x)
+
+#         # Encode timestep
+#         if not torch.is_tensor(timestep):
+#             timestep = torch.tensor([timestep], device=x.device)
+#         if timestep.ndim == 0:
+#             timestep = timestep[None].to(x.device)
+#         timestep = timestep.expand(x.shape[0])
+#         cond = torch.cat([self.diffusion_step_encoder(timestep), global_cond], dim=-1)
+
+#         # Downsampling path
+#         skips = []
+#         for i, (res1, res2, down) in enumerate(self.down_modules):
+#             x = res1(x, cond)
+#             x = res2(x, cond)
+#             if i < len(self.down_modules) - 1:
+#                 skips.append(x)  # Only save skip if downsampling follows
+#             x = down(x)
+
+#         # Mid blocks
+#         for block in self.mid_modules:
+#             x = block(x, cond)
+
+#         # Upsampling path
+#         for i, (res1, res2, up) in enumerate(self.up_modules):
+#             if i < len(skips):
+#                 skip = skips.pop()
+#                 print(f"[UP BLOCK {i}] x shape: {x.shape}, skip shape: {skip.shape}")
+#                 if x.shape[-1] != skip.shape[-1]:
+#                     print(f"[WARNING] x.shape={x.shape}, skip.shape={skip.shape} — resizing x to match skip")
+#                     x = F.interpolate(x, size=skip.shape[-1], mode='nearest')
+#                 x = torch.cat([x, skip], dim=1)
+
+#             x = res1(x, cond)
+#             x = res2(x, cond)
+#             x = up(x)
+
+#         return self.final_conv(x)
+
+
 class ConditionalUnet1D(nn.Module):
-    def __init__(self,
-                 input_dim,
-                 global_cond_dim,
-                 diffusion_step_embed_dim=256,
-                 down_dims=[256, 512, 1024],
-                 kernel_size=5,
-                 n_groups=8):
+    def __init__(self, input_dim, global_cond_dim, diffusion_step_embed_dim=64):
         super().__init__()
 
-        self.input_dim = input_dim
-        all_dims = [input_dim] + down_dims
         cond_dim = diffusion_step_embed_dim + global_cond_dim
+        hidden_dim = 128
+        self.input_dim = input_dim
 
         self.diffusion_step_encoder = nn.Sequential(
             SinusoidalPosEmb(diffusion_step_embed_dim),
@@ -108,95 +231,44 @@ class ConditionalUnet1D(nn.Module):
             nn.Linear(diffusion_step_embed_dim * 4, diffusion_step_embed_dim)
         )
 
-        # 🔧 Input projection to match first down_dim
-        self.input_proj = Conv1dBlock(input_dim, down_dims[0], kernel_size, n_groups)
+        # Input projection
+        self.input_proj = nn.Conv1d(input_dim, hidden_dim, kernel_size=3, padding=1)
 
-        # Downsampling path
-        self.down_modules = nn.ModuleList()
-        for i in range(len(down_dims) - 1):
-            dim_in, dim_out = down_dims[i], down_dims[i + 1]
-            self.down_modules.append(nn.ModuleList([
-                ConditionalResidualBlock1D(dim_in, dim_out, cond_dim, kernel_size, n_groups),
-                ConditionalResidualBlock1D(dim_out, dim_out, cond_dim, kernel_size, n_groups),
-                Downsample1d(dim_out)
-            ]))
-        # # Last down block (no downsample)
-        # self.down_modules.append(nn.ModuleList([
-        #     ConditionalResidualBlock1D(down_dims[-1], down_dims[-1], cond_dim, kernel_size, n_groups),
-        #     ConditionalResidualBlock1D(down_dims[-1], down_dims[-1], cond_dim, kernel_size, n_groups),
-        #     nn.Identity()
-        # ]))
+        # Down block
+        self.down1 = ConditionalResidualBlock1D(hidden_dim, hidden_dim, cond_dim)
 
-        # Middle
-        mid_dim = down_dims[-1]
-        self.mid_modules = nn.ModuleList([
-            ConditionalResidualBlock1D(mid_dim, mid_dim, cond_dim, kernel_size, n_groups),
-            ConditionalResidualBlock1D(mid_dim, mid_dim, cond_dim, kernel_size, n_groups)
-        ])
+        # Mid block
+        self.mid = ConditionalResidualBlock1D(hidden_dim, hidden_dim, cond_dim)
 
-        # Upsampling path
-        self.up_modules = nn.ModuleList()
-        reversed_dims = list(reversed(down_dims))
-        for i in range(len(reversed_dims) - 1):
-            dim_in, dim_out = reversed_dims[i], reversed_dims[i + 1]
-            self.up_modules.append(nn.ModuleList([
-                ConditionalResidualBlock1D(dim_in * 2, dim_out, cond_dim, kernel_size, n_groups),
-                ConditionalResidualBlock1D(dim_out, dim_out, cond_dim, kernel_size, n_groups),
-                Upsample1d(dim_out)
-            ]))
-        # Last up block (no upsample)
-        self.up_modules.append(nn.ModuleList([
-            ConditionalResidualBlock1D(down_dims[0] * 2, down_dims[0], cond_dim, kernel_size, n_groups),
-            ConditionalResidualBlock1D(down_dims[0], down_dims[0], cond_dim, kernel_size, n_groups),
-            nn.Identity()
-        ]))
+        # Up block (takes skip connection, so 128+128)
+        self.up1 = ConditionalResidualBlock1D(hidden_dim * 2, hidden_dim, cond_dim)
 
-        # Final conv to return to action dimension
-        self.final_conv = nn.Sequential(
-            Conv1dBlock(down_dims[0], down_dims[0], kernel_size, n_groups),
-            nn.Conv1d(down_dims[0], input_dim, kernel_size=1)
-        )
-
-        print("Number of parameters: {:e}".format(sum(p.numel() for p in self.parameters())))
+        # Output projection
+        self.output_proj = nn.Conv1d(hidden_dim, input_dim, kernel_size=1)
 
     def forward(self, x: torch.Tensor, timestep: Union[int, torch.Tensor], global_cond: torch.Tensor):
-        """
-        Args:
-            x: (B, T, input_dim) or (B, input_dim, T)
-            timestep: (B,) or scalar
-            global_cond: (B, cond_dim)
-        Returns:
-            x: (B, input_dim, T)
-        """
         if x.ndim == 3 and x.shape[1] != self.input_dim:
-            x = x.permute(0, 2, 1)  # (B, T, C) -> (B, C, T)
+            x = x.permute(0, 2, 1)  # (B, T, C) → (B, C, T)
 
-        x = self.input_proj(x)  # 🔧 Project to match first down_dim
-
+        # Encode timestep
         if not torch.is_tensor(timestep):
             timestep = torch.tensor([timestep], device=x.device)
         if timestep.ndim == 0:
             timestep = timestep[None].to(x.device)
         timestep = timestep.expand(x.shape[0])
-
         cond = torch.cat([self.diffusion_step_encoder(timestep), global_cond], dim=-1)
 
-        skips = []
-        for res1, res2, down in self.down_modules:
-            x = res1(x, cond)
-            x = res2(x, cond)
-            skips.append(x)
-            x = down(x)
+        # Down path
+        x = self.input_proj(x)
+        skip = self.down1(x, cond)
 
-        for block in self.mid_modules:
-            x = block(x, cond)
+        # Mid
+        x = self.mid(skip, cond)
 
-        for res1, res2, up in self.up_modules:
-            skip = skips.pop()
-            x = torch.cat([x, skip], dim=1)
-            x = res1(x, cond)
-            x = res2(x, cond)
-            x = up(x)
+        # Up path (concat skip)
+        if x.shape[-1] != skip.shape[-1]:
+            x = F.interpolate(x, size=skip.shape[-1], mode='nearest')
+        x = torch.cat([x, skip], dim=1)
+        x = self.up1(x, cond)
 
-        x = self.final_conv(x)
-        return x
+        return self.output_proj(x)
