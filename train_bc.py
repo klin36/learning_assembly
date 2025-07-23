@@ -29,7 +29,7 @@ def train_bc(
     action_horizon: int = 8,
     pred_horizon: int = 16,
     batch_size: int = 256,
-    epochs: int = 100,
+    epochs: int = 200,
     lr: float = 1e-4,
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
     project_name: str = 'pusht_bc',

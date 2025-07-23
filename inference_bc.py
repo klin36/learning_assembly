@@ -9,11 +9,11 @@ from envs.pusht_env import PushTEnv
 from models.unet_bc import ConditionalUnet1D
 from utils.training_utils import EMAModel
 from datasets.pusht_dataset import PushTStateDataset, normalize_data, unnormalize_data
-from diffusers.schedulers import DDPMScheduler
+from diffusers.schedulers import DDPMScheduler # TODO SWITCH TO DDIM
 
 # Parameters
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model_path = "checkpoints/bc_model_2025-07-22_13-58-35.pt"
+model_path = "checkpoints/bc_model_2025-07-23_11-47-42.pt"
 zarr_path = "data/pusht/pusht_cchi_v7_replay.zarr"
 obs_horizon = 2
 pred_horizon = 16
@@ -40,13 +40,8 @@ model = ConditionalUnet1D(
 model.load_state_dict(torch.load(model_path, map_location=device))
 model.eval()
 
-# # Restore EMA weights (already saved into model during training)
-# # Not necessary
-# ema = EMAModel(model.parameters(), power=0.75)
-# ema.copy_to(model.parameters())
-
 # Scheduler
-noise_scheduler = DDPMScheduler(
+noise_scheduler = DDPMScheduler( # TODO SWITCH TO DDIM
     num_train_timesteps=num_diffusion_iters,
     beta_schedule='squaredcos_cap_v2',
     clip_sample=True,
@@ -64,6 +59,8 @@ obs_deque = collections.deque([obs] * obs_horizon, maxlen=obs_horizon)
 done = False
 step_idx = 0
 
+imgs = [env.render(mode='rgb_array')]  # store first frame for video
+
 # Main inference loop
 with tqdm(total=max_steps, desc="Rollout") as pbar:
     while not done:
@@ -76,7 +73,7 @@ with tqdm(total=max_steps, desc="Rollout") as pbar:
         # Initialize noisy actions
         action = torch.randn((1, pred_horizon, action_dim), device=device)
 
-        # Diffusion process
+        # Diffusion
         with torch.no_grad():
             for k in noise_scheduler.timesteps:
                 noise_pred = model(action, k, global_cond=obs_cond)
@@ -91,13 +88,13 @@ with tqdm(total=max_steps, desc="Rollout") as pbar:
         action = action.detach().cpu().numpy()[0]
         action = unnormalize_data(action, stats=stats['action'])
 
-        # Slice predicted actions to execute
         start = obs_horizon - 1
         end = start + action_horizon
         to_execute = action[start:end]
+        # print("Predicted action:", to_execute)
+        # print("Raw predicted action (normalized):", action)
+        # print("Unnormalized:", unnormalize_data(action, stats['action']))
 
-        imgs = [env.render(mode='rgb_array')]  # store first frame for video
-        print("Predicted action:", to_execute)
 
         for u in range(len(to_execute)):
             obs, reward, done, _, _ = env.step(to_execute[u])
@@ -111,10 +108,9 @@ with tqdm(total=max_steps, desc="Rollout") as pbar:
                 done = True
             if done:
                 break
-        print(f"Rollout steps executed: {step_idx}")
 
         
-        video_path = "inference.mp4"
-        clip = ImageSequenceClip(imgs, fps=10)
-        clip.write_videofile(video_path, codec="libx264")
-        print(f"Saved video to {video_path}")
+video_path = "inference.mp4"
+clip = ImageSequenceClip(imgs, fps=10)
+clip.write_videofile(video_path, codec="libx264")
+print(f"Saved video to {video_path}")
