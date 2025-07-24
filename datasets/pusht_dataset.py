@@ -55,14 +55,18 @@ def get_data_stats(data):
 
 
 def normalize_data(data, stats):
-    ndata = (data - stats['min']) / (stats['max'] - stats['min'] + 1e-6)
+    # ndata = (data - stats['min']) / (stats['max'] - stats['min'] + 1e-6)
+    # ndata = ndata * 2 - 1
+    ndata = data / 512
     ndata = ndata * 2 - 1
     return ndata
 
 
 def unnormalize_data(ndata, stats):
+    # ndata = (ndata + 1) / 2
+    # return ndata * (stats['max'] - stats['min']) + stats['min']
     ndata = (ndata + 1) / 2
-    return ndata * (stats['max'] - stats['min']) + stats['min']
+    return ndata * 512
 
 
 class PushTStateDataset(Dataset):

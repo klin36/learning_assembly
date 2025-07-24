@@ -1,42 +1,41 @@
 import os
 import numpy as np
+import zarr
 import torch
 from tqdm import tqdm
 from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
 
 from envs.pusht_env import PushTEnv
-from datasets.pusht_dataset import PushTStateDataset
-from datasets.pusht_dataset import unnormalize_data
 
 # Parameters
 zarr_path = "data/pusht/pusht_cchi_v7_replay.zarr"
-obs_horizon = 2
-action_horizon = 8
-pred_horizon = 16
 render_fps = 10
 video_path = "ground_truth_rollout.mp4"
+episode_idx = 3  # change to visualize a different episode
 
-# Load dataset
-dataset = PushTStateDataset(
-    dataset_path=zarr_path,
-    pred_horizon=pred_horizon,
-    obs_horizon=obs_horizon,
-    action_horizon=action_horizon
-)
-sample = dataset[0]
-obs_seq = sample["obs"].permute(1, 0).numpy()      # (obs_horizon, obs_dim)
-# action_seq = sample["action"].permute(1, 0).numpy()  # (action_horizon, act_dim)
+# Load full Zarr data
+dataset_root = zarr.open(zarr_path, 'r')
+all_actions = dataset_root['data']['action'][:]  # shape (N, action_dim)
+episode_ends = dataset_root['meta']['episode_ends'][:]
 
-action_seq = sample["action"].permute(1, 0).numpy()
-action_seq = unnormalize_data(action_seq, dataset.stats["action"])
+statess = dataset_root['data']['state'][:]
+
+# Determine episode bounds
+start_idx = 0 if episode_idx == 0 else episode_ends[episode_idx - 1]
+end_idx = episode_ends[episode_idx]
+actions = all_actions[start_idx:end_idx] # don't unnormalize
 
 # Rollout in env
 env = PushTEnv()
-env.seed(0)  # use same seed as training if needed
+env.seed(0)
 obs, _ = env.reset()
+env._set_state(statess[start_idx])
+
+
 imgs = [env.render(mode="rgb_array")]
 
-for action in action_seq:
+for t, action in enumerate(actions):
+    print(f"[{t}] Action: {action}, Norm: {np.linalg.norm(action):.4f}")
     obs, reward, done, _, _ = env.step(action)
     imgs.append(env.render(mode="rgb_array"))
 
