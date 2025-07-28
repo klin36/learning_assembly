@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import collections
 from tqdm import tqdm
+import zarr
 from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
 
 from envs.pusht_env import PushTEnv
@@ -13,7 +14,7 @@ from diffusers.schedulers import DDPMScheduler # TODO SWITCH TO DDIM
 
 # Parameters
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model_path = "checkpoints/bc_model_2025-07-23_12-23-24.pt"
+model_path = "checkpoints/bc_model_2025-07-27_21-31-57.pt"
 zarr_path = "data/pusht/pusht_cchi_v7_replay.zarr"
 obs_horizon = 2
 pred_horizon = 16
@@ -31,6 +32,15 @@ dataset = PushTStateDataset(
     action_horizon=action_horizon
 )
 stats = dataset.stats
+
+# Dataset conditioning code
+dataset_root = zarr.open(zarr_path, 'r')
+episode_ends = dataset_root['meta']['episode_ends'][:]
+states = dataset_root['data']['state'][:]
+episode_idx = 3
+offset = 2
+start_idx = 0 if episode_idx == 0 else episode_ends[episode_idx - 1]
+t0 = start_idx + offset
 
 # Model
 model = ConditionalUnet1D(
@@ -51,11 +61,19 @@ noise_scheduler.set_timesteps(num_diffusion_iters)
 
 # Environment
 env = PushTEnv()
-env.seed(100000)
+env.seed(0)
 obs, _ = env.reset()
+env._set_state(states[t0]) # comment out to try random init
+obs = states[t0] # comment out to try random init
+
 
 # Observation history
-obs_deque = collections.deque([obs] * obs_horizon, maxlen=obs_horizon)
+obs_deque = collections.deque([states[t0 - i] for i in reversed(range(obs_horizon))], maxlen=obs_horizon) # comment out to try random init
+# obs_deque = collections.deque([obs] * obs_horizon, maxlen=obs_horizon)
+print("Initial env state:", states[t0])
+print("Observation history:")
+for i, o in enumerate(obs_deque):
+    print(f"  t-{obs_horizon - 1 - i}: {o}")
 done = False
 step_idx = 0
 imgs = [env.render(mode='rgb_array')]  # store first frame for video
