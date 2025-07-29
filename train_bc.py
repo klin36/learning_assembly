@@ -12,14 +12,14 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 import wandb
 import zarr
+import matplotlib.pyplot as plt
 
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusers.optimization import get_scheduler
 
 from utils.training_utils import EMAModel
-from datasets.pusht_dataset import PushTStateDataset
 from models.unet_bc import ConditionalUnet1D
-
+from datasets.pusht_dataset import PushTStateDataset, normalize_data, unnormalize_data
 
 def train_bc(
     zarr_path: str,
@@ -29,7 +29,7 @@ def train_bc(
     action_horizon: int = 8,
     pred_horizon: int = 16,
     batch_size: int = 256,
-    epochs: int = 200,
+    epochs: int = 9000,
     lr: float = 1e-4,
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
     project_name: str = 'pusht_bc',
@@ -97,43 +97,33 @@ def train_bc(
     for epoch in tqdm(range(epochs), desc='Epoch'):
         epoch_loss = []
         for batch in tqdm(dataloader, desc='Batch', leave=False):
-            # Shapes:
-            # obs:    (B, obs_horizon, obs_dim)
-            # action: (B, pred_horizon, act_dim)
-
-            obs = batch['obs'].to(device)         # (B, obs_horizon, obs_dim)
-            action = batch['action'].to(device)   # (B, pred_horizon, act_dim)
+            obs = batch['obs'].to(device) # (B, obs_horizon, obs_dim)
+            action = batch['action'].to(device) # (B, pred_horizon, act_dim)
 
             B = obs.shape[0]
 
             # Flatten observation across time to form global condition
-            obs_cond = obs.view(B, -1)             # (B, obs_horizon * obs_dim)
+            obs_cond = obs.view(B, -1) # (B, obs_horizon * obs_dim)
 
             # Sample noise
-            noise = torch.randn_like(action)       # (B, pred_horizon, act_dim)
+            noise = torch.randn_like(action) # (B, pred_horizon, act_dim)
 
             # Sample random timestep for each sample in batch
-            timesteps = torch.randint(
-                0,
-                noise_scheduler.config.num_train_timesteps,
-                (B,),
-                device=device
-            ).long()
+            timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (B,), device=device).long()
 
             # Apply forward diffusion: q(x_t | x_0)
             noisy_action = noise_scheduler.add_noise(action, noise, timesteps)
 
-            # Permute to (B, act_dim, pred_horizon) for model
-            noisy_action = noisy_action.permute(0, 2, 1)  # (B, act_dim, T)
-            noise = noise.permute(0, 2, 1)                # (B, act_dim, T)
+            noisy_action = noisy_action.permute(0, 2, 1) # (B, act_dim, T)
+            noise = noise.permute(0, 2, 1) # (B, act_dim, T)
 
-            # Predict noise with UNet
-            pred_noise = model(noisy_action, timesteps, global_cond=obs_cond)  # (B, act_dim, T)
+            # Predict noise
+            pred_noise = model(noisy_action, timesteps, global_cond=obs_cond) # (B, act_dim, T)
 
-            # MSE loss between predicted and true noise
+            # MSE loss
             loss = F.mse_loss(pred_noise, noise.permute(0, 2, 1))
 
-            # Backpropagation and optimization
+            # Backprop and optimization
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
@@ -147,17 +137,65 @@ def train_bc(
         print(f"[Epoch {epoch+1}] Avg loss: {avg_loss:.6f}")
         wandb.log({"loss": avg_loss, "epoch": epoch + 1})
 
+        if (epoch + 1) % 500 == 0:
+            visualize_inference(model, dataset, dataloader, noise_scheduler, dataset.stats, device, epoch, obs_horizon)
 
     # Save final EMA weights
     os.makedirs("checkpoints", exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_path = f"checkpoints/bc_model_{timestamp}.pt"
-
-    ema.copy_to(model.parameters())  # copy EMA weights into model
+    ema.copy_to(model.parameters())
     torch.save(model.state_dict(), model_path)
     print(f"Saved EMA model to {model_path}")
     wandb.save(model_path)
     wandb.finish()
+
+
+def visualize_inference(
+    model, dataset, dataloader, noise_scheduler, stats, device, epoch, obs_horizon, 
+    save_path_prefix="training_vis/inference_epoch", wandb_log=True):
+
+    model.eval()
+
+    sample = next(iter(dataloader))
+    obs = sample['obs'][:1].to(device) # (1, obs_dim, obs_horizon)
+    gt_action = sample['action'][:1].to(device) # (1, act_dim, pred_horizon)
+    obs_cond = obs.view(1, -1) # (1, obs_dim * obs_horizon)
+
+    # Initialize noise and denoise
+    x = torch.randn((1, gt_action.shape[-1], gt_action.shape[1]), device=device) # (1, T, act_dim)
+    for t in noise_scheduler.timesteps:
+        model_input = x.permute(0, 2, 1) # (B, act_dim, T)
+        with torch.no_grad():
+            noise_pred = model(model_input, t, obs_cond)
+        noise_pred = noise_pred.permute(0, 2, 1)
+        x = noise_scheduler.step(noise_pred, t, x).prev_sample
+
+    # Convert and unnormalize
+    pred_action = x.detach().cpu().numpy()[0] # (T, act_dim)
+    gt_action_np = gt_action.cpu().numpy()[0].T # (T, act_dim)
+    pred_action = unnormalize_data(pred_action, stats['action'])
+    gt_action_np = unnormalize_data(gt_action_np, stats['action'])
+
+    # Plot trajectories
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.plot(gt_action_np[:, 0], gt_action_np[:, 1], label='Ground Truth', color='blue')
+    ax.plot(pred_action[:, 0], pred_action[:, 1], label='Predicted', color='red')
+    ax.set_xlim(0, 512)
+    ax.set_ylim(0, 512)
+    ax.set_aspect('equal')
+    ax.set_title(f"2D Action Trajectory (Epoch {epoch+1})")
+    ax.legend()
+    plt.tight_layout()
+
+    image_path = f"{save_path_prefix}_{epoch+1}.png"
+    # plt.savefig(image_path)
+    plt.close(fig)
+
+    if wandb_log:
+        wandb.log({"inference_plots": [wandb.Image(image_path, caption=f"Epoch {epoch+1}")]})
+
+    model.train()
 
 
 if __name__ == "__main__":

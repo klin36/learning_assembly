@@ -10,11 +10,11 @@ from envs.pusht_env import PushTEnv
 from models.unet_bc import ConditionalUnet1D
 from utils.training_utils import EMAModel
 from datasets.pusht_dataset import PushTStateDataset, normalize_data, unnormalize_data
-from diffusers.schedulers import DDPMScheduler # TODO SWITCH TO DDIM
+from diffusers.schedulers import DDPMScheduler, DDIMScheduler
 
 # Parameters
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model_path = "checkpoints/bc_model_2025-07-27_21-31-57.pt"
+model_path = "checkpoints/bc_model_10000.pt"
 zarr_path = "data/pusht/pusht_cchi_v7_replay.zarr"
 obs_horizon = 2
 pred_horizon = 16
@@ -51,21 +51,20 @@ model.load_state_dict(torch.load(model_path, map_location=device))
 model.eval()
 
 # Scheduler
-noise_scheduler = DDPMScheduler( # TODO SWITCH TO DDIM
+noise_scheduler = DDIMScheduler(
     num_train_timesteps=num_diffusion_iters,
     beta_schedule='squaredcos_cap_v2',
     clip_sample=True,
     prediction_type='epsilon'
 )
-noise_scheduler.set_timesteps(num_diffusion_iters)
+noise_scheduler.set_timesteps(25)
 
 # Environment
 env = PushTEnv()
-env.seed(0)
+env.seed(10000)
 obs, _ = env.reset()
 env._set_state(states[t0]) # comment out to try random init
 obs = states[t0] # comment out to try random init
-
 
 # Observation history
 obs_deque = collections.deque([states[t0 - i] for i in reversed(range(obs_horizon))], maxlen=obs_horizon) # comment out to try random init
